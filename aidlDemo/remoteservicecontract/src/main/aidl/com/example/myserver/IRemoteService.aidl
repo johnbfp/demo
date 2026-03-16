@@ -14,4 +14,10 @@ interface IRemoteService {
     List<Entity> getEntity();
 
     void asyncCallSomeone( String para, IMyCallback callback);
+
+    /** 注册回调，服务端可主动通知客户端 */
+    void registerCallback(IMyCallback callback);
+
+    /** 取消注册回调 */
+    void unregisterCallback(IMyCallback callback);
 }
