@@ -5,8 +5,12 @@ package com.example.myserver;
 
 interface IMyCallback {
     /**
-     * Demonstrates some basic types that you can use as parameters
-     * and return values in AIDL.
+     * 异步调用的成功回调
      */
     void onSuccess(String aString);
+
+    /**
+     * 服务端主动向客户端推送消息
+     */
+    void onServerMessage(String message);
 }

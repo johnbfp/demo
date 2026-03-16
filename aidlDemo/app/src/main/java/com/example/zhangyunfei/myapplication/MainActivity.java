@@ -23,6 +23,31 @@ public class MainActivity extends AppCompatActivity {
     private boolean mBound = false;
     private IRemoteService iRemoteService;
 
+    /**
+     * 持久化的回调实现，注册到服务端后，服务端可主动调用此回调通知客户端
+     */
+    private final IMyCallback.Stub mCallback = new IMyCallback.Stub() {
+        @Override
+        public void onSuccess(final String aString) throws RemoteException {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    alert("回调 onSuccess: " + aString);
+                }
+            });
+        }
+
+        @Override
+        public void onServerMessage(final String message) throws RemoteException {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    alert("服务端推送: " + message);
+                }
+            });
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -84,8 +109,18 @@ public class MainActivity extends AppCompatActivity {
                         final String para = "canshu";
                         iRemoteService.asyncCallSomeone(para, new IMyCallback.Stub() {
                             @Override
-                            public void onSuccess(String aString) throws RemoteException {
-                                alert(String.format("发送: %s, 回调: %s", para, aString));
+                            public void onSuccess(final String aString) throws RemoteException {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        alert(String.format("发送: %s, 回调: %s", para, aString));
+                                    }
+                                });
+                            }
+
+                            @Override
+                            public void onServerMessage(String message) throws RemoteException {
+                                // 仅用于 asyncCallSomeone 场景，无需处理
                             }
                         });
                     }
@@ -97,7 +132,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void alert(String str) {
-        Toast.makeText(this, str, 0).show();
+        Toast.makeText(this, str, Toast.LENGTH_SHORT).show();
     }
 
     @Override
@@ -112,6 +147,14 @@ public class MainActivity extends AppCompatActivity {
     protected void onStop() {
         super.onStop();
         if (mBound) {
+            // 取消注册持久化回调
+            if (iRemoteService != null) {
+                try {
+                    iRemoteService.unregisterCallback(mCallback);
+                } catch (RemoteException e) {
+                    e.printStackTrace();
+                }
+            }
             unbindService(mServiceConnection);
             mBound = false;
         }
@@ -139,6 +182,8 @@ public class MainActivity extends AppCompatActivity {
             if (iRemoteService != null) {
                 try {
                     iRemoteService.doSomeThing(0, "anything string");
+                    // 注册持久化回调，服务端可主动推送消息给本客户端
+                    iRemoteService.registerCallback(mCallback);
                 } catch (RemoteException e) {
                     e.printStackTrace();
                 }
@@ -148,6 +193,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onServiceDisconnected(ComponentName name) {
             Log.e(getLocalClassName(), "service disconnected");
+            iRemoteService = null;
             mBound = false;
         }
     };

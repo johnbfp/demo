@@ -427,20 +427,18 @@ android studio为我们方便的提供自动生成parcelable实现的快捷键�
 在AIDL中，有时候需要实现回调，传入一个回调callbak，或者listener类。如何实现呢？
 
 ###1.编写回调类aidl文件
-IMyCallback类具有一个 onSuccess回调方法
+IMyCallback类具有 onSuccess 和 onServerMessage 两个回调方法。
 IMyCallback.aidl，这个文件里描述一个回调接口
 
     // IMyCallback.aidl
     package com.example.myserver;
     
-    // Declare any non-default types here with import statements
-    
     interface IMyCallback {
-        /**
-         * Demonstrates some basic types that you can use as parameters
-         * and return values in AIDL.
-         */
+        /** 异步调用的成功回调 */
         void onSuccess(String aString);
+    
+        /** 服务端主动向客户端推送消息 */
+        void onServerMessage(String message);
     }
 
 ###2.声明方法，以回调类作为参数，示例：
@@ -455,41 +453,114 @@ IRemoteService.aidl
         interface IRemoteService {
        
             void asyncCallSomeone( String para, IMyCallback callback);
+
+            /** 注册回调，服务端可主动通知客户端 */
+            void registerCallback(IMyCallback callback);
+
+            /** 取消注册回调 */
+            void unregisterCallback(IMyCallback callback);
         }
 
 ###3.实现方法，发起回调通知
-发起回调有点类似广播的方式，示例：    
+服务端持久化维护一个 RemoteCallbackList，所有已注册的客户端都可以收到通知。
 
-                    @Override
-            public void asyncCallSomeone(String para, IMyCallback callback) throws RemoteException {
-                RemoteCallbackList<IMyCallback> remoteCallbackList = new RemoteCallbackList<>();
-                remoteCallbackList.register(callback);
-                final int len = remoteCallbackList.beginBroadcast();
-                for (int i = 0; i < len; i++) {
-                    remoteCallbackList.getBroadcastItem(i).onSuccess(para + "_callbck");
-                }
-                remoteCallbackList.finishBroadcast();
+    // MyService.java
+    private final RemoteCallbackList<IMyCallback> mCallbackList = new RemoteCallbackList<>();
+
+    @Override
+    public void registerCallback(IMyCallback callback) throws RemoteException {
+        if (callback != null) {
+            mCallbackList.register(callback);
+        }
+    }
+
+    @Override
+    public void unregisterCallback(IMyCallback callback) throws RemoteException {
+        if (callback != null) {
+            mCallbackList.unregister(callback);
+        }
+    }
+
+服务端主动广播给所有客户端（例如在 MainActivity 按钮点击时触发）：
+
+    private void dobroadcastToAllClients(String message) {
+        final int len = mCallbackList.beginBroadcast();
+        for (int i = 0; i < len; i++) {
+            try {
+                mCallbackList.getBroadcastItem(i).onServerMessage(message);
+            } catch (RemoteException e) {
+                Log.e(TAG, "广播时出错", e);
             }
+        }
+        mCallbackList.finishBroadcast();
+    }
 
 我们需要一个 RemoteCallbackList 集合类，把 要回调的类的示例callback示例放到这集合内。调用这个集合类RemoteCallbackList的下面两个方法：
 beginBroadcast 开始广播，finishBroadcast 结束广播，配合使用。
 
-###4.客户端调用示例：
-客户端在获得接口操作对象后，传入回调类，示例：
+注意：回调方法运行在 Binder 线程，不是主线程。如果需要更新 UI，必须使用 runOnUiThread 切换到主线程。
 
-            try {
-                    if (iRemoteService != null) {
-                        final String para = "canshu";
-                        iRemoteService.asyncCallSomeone(para, new IMyCallback.Stub() {
-                            @Override
-                            public void onSuccess(String aString) throws RemoteException {
-                                alert(String.format("发送: %s, 回调: %s", para, aString));
-                            }
-                        });
-                    }
-                } catch (RemoteException e) {
-                    e.printStackTrace();
+###4.客户端调用示例：
+客户端在服务连接后，注册持久化回调。服务端任何时候都可以主动推送：
+
+    // 持久化的回调实现
+    private final IMyCallback.Stub mCallback = new IMyCallback.Stub() {
+        @Override
+        public void onSuccess(String aString) throws RemoteException {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    alert("回调 onSuccess: " + aString);
                 }
+            });
+        }
+
+        @Override
+        public void onServerMessage(String message) throws RemoteException {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    alert("服务端推送: " + message);
+                }
+            });
+        }
+    };
+
+    // 在服务连接时注册回调
+    @Override
+    public void onServiceConnected(ComponentName name, IBinder service) {
+        iRemoteService = IRemoteService.Stub.asInterface(service);
+        mBound = true;
+        try {
+            iRemoteService.registerCallback(mCallback);
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // 在 onStop 时取消注册
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (mBound) {
+            try {
+                iRemoteService.unregisterCallback(mCallback);
+            } catch (RemoteException e) {
+                e.printStackTrace();
+            }
+            unbindService(mServiceConnection);
+            mBound = false;
+        }
+    }
+
+#互相通信总结
+
+通过 AIDL 实现两个应用互相通信的关键点：
+
+1. **客户端→服务端**：客户端绑定服务后，通过 IRemoteService 接口调用服务端方法（addEntity、getEntity等）。
+2. **服务端→客户端**：服务端通过 RemoteCallbackList 持久化管理所有已注册的客户端回调，可以在任意时机主动向客户端推送消息（onServerMessage）。
+3. 回调方法运行在 Binder 线程，更新 UI 必须使用 runOnUiThread。
+4. 客户端在 onStop/onDestroy 时应调用 unregisterCallback 取消注册，避免内存泄漏。
 
 #参考
 谷歌官方文档
